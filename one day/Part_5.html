@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Modeling in the Tidyverse - Comparing Models with Resampling</title>
+    <meta charset="utf-8">
+    <meta name="author" content="Max Kuhn (RStudio)" />
+    <link rel="stylesheet" href="mtheme_max.css" type="text/css" />
+    <link rel="stylesheet" href="fonts_mtheme_max.css" type="text/css" />
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle, inverse, title-slide
+
+# Modeling in the Tidyverse - Comparing Models with Resampling
+### Max Kuhn (RStudio)
+
+---
+
+
+
+
+
+
+# Loading
+
+
+```r
+library(tidymodels)
+```
+
+```
+## ── Attaching packages ────────────────────────────────────────── tidymodels 0.0.2 ──
+```
+
+```
+## ✔ broom     0.5.2     ✔ purrr     0.3.2
+## ✔ dials     0.0.2     ✔ recipes   0.1.5
+## ✔ dplyr     0.8.1     ✔ rsample   0.0.4
+## ✔ ggplot2   3.1.0     ✔ tibble    2.1.1
+## ✔ infer     0.4.0     ✔ yardstick 0.0.2
+## ✔ parsnip   0.0.2
+```
+
+```
+## ── Conflicts ───────────────────────────────────────────── tidymodels_conflicts() ──
+## ✖ purrr::discard() masks scales::discard()
+## ✖ dplyr::filter()  masks stats::filter()
+## ✖ dplyr::lag()     masks stats::lag()
+## ✖ recipes::step()  masks stats::step()
+```
+
+
+
+
+
+---
+# Previously
+
+
+
+
+
+We fit a linear model with a fairly complex recipe and a boosted with minimal feature engineering. 
+
+Their resampled RMSE results were somewhat similar: 0.0799 for the linear regression and 0.0713 for boosting.
+
+ * These are in log&lt;sub&gt;10&lt;/sub&gt; units.
+
+Let's get the RMSE values for each model into their own columns.
+
+---
+# RMSE Results
+
+
+```r
+rmse_results &lt;-
+  bst_splits %&gt;%
+  mutate(
+    boosting =
+      map_dbl(
+        boosting_res, ~ .x %&gt;% filter(trees == 20 &amp; .metric == "rmse") %&gt;% pull(.estimate)
+      ),
+    linear_reg = map_dbl(lm_res, ~ .x %&gt;% filter(.metric == "rmse") %&gt;% pull(.estimate))
+  ) %&gt;%
+  select(splits, id, boosting, linear_reg)
+
+rmse_results %&gt;% slice(1:5)
+```
+
+```
+## #  10-fold cross-validation using stratification 
+## # A tibble: 5 x 4
+##   splits           id     boosting linear_reg
+## * &lt;list&gt;           &lt;chr&gt;     &lt;dbl&gt;      &lt;dbl&gt;
+## 1 &lt;split [2K/222]&gt; Fold01   0.0654     0.0770
+## 2 &lt;split [2K/222]&gt; Fold02   0.0681     0.0898
+## 3 &lt;split [2K/222]&gt; Fold03   0.0766     0.0746
+## 4 &lt;split [2K/222]&gt; Fold04   0.0795     0.0818
+## 5 &lt;split [2K/222]&gt; Fold05   0.0738     0.0791
+```
+
+---
+# Resample-to-Resample Correlation
+
+With resampling methods, it is common to see a correlation in the results across models. 
+
+Basically, some resamples are much more likely to produce good results (across models) than others. Similarly, some resamples are more difficult. 
+
+We have 10 _paired_ measurements for two models`[*]` whose correlation is very high: 0.6603. 
+
+We can view these resampling results as _replicates_ of a random process and use them to make _inferential statements_ about performance but we have to account for the within-resample correlation.
+
+
+&lt;br&gt;
+
+`[*]` For boosting, there is some _optimization-bias_ built into the RMSE estimate. This is a real issue but I have almost always found the amount of bias to be much smaller than the experimental noise. 
+
+---
+# Resample-to-Resample Correlation
+
+.pull-left[
+
+
+```r
+rmse_results %&gt;% 
+  select(-splits) %&gt;% 
+  gather(model, rmse, -id) %&gt;% 
+  ggplot() + 
+  aes(x = model, y = rmse, group = id, color = id) +
+  geom_line(alpha = .8) + 
+  theme(legend.position = "none")
+```
+
+]
+.pull-right[
+
+&lt;img src="images/part-5-rs-plot-1.svg" width="672" /&gt;
+
+]
+
+
+---
+
+# Collecting and Analyzing the Resampling Results &lt;img src="images/tidyposterior.png" class="title-hex"&gt;
+
+
+.pull-left[
+We _could_ just do a paired t-test:
+
+.code70[
+
+
+```r
+rmse_results %&gt;% 
+  mutate(diffs = boosting - linear_reg) %&gt;% 
+  pull(diffs) %&gt;% 
+  t.test()
+```
+
+```
+## 
+## 	One Sample t-test
+## 
+## data:  .
+## t = -3.6, df = 9, p-value = 0.006
+## alternative hypothesis: true mean is not equal to 0
+## 95 percent confidence interval:
+##  -0.011756 -0.002726
+## sample estimates:
+## mean of x 
+## -0.007241
+```
+
+]
+
+**Noooooo**! Down with p-values, right? This is an ASA conference!
+
+]
+.pull-right[
+The `tidyposterior` package is designed to estimate the relationship between the _outcome metrics_ (i.e. RMSE) as a function of the model type (i.e. boosting) in a way that takes into account the resample-to-resample covariances that can occur. 
+
+A simple [Bayesian linear model](http://mc-stan.org/rstanarm/articles/continuous.html) is used here for that purpose. 
+
+I recommend the book [_Statistical Rethinking_](http://xcelab.net/rm/statistical-rethinking/) if you are new to Bayesian analysis. 
+
+]
+
+
+---
+
+# Bayesian Hierarchical Linear Model &lt;img src="images/tidyposterior.png" class="title-hex"&gt;
+
+If we did a basic ANOVA model to compare three models, it might look like:
+
+`$$RMSE = b_0 + b_1m_1 + b_2m_2$$`
+
+where the `\(m_j\)` are indicator variables for the model (boosting, linear regression, etc).
+
+However, there are usually resample-to-resample effects. To account for this, we can make this ANOVA model _specific to a resample_:
+
+
+`$$RMSE_i = b_{i0} + b_{i1}m_1 + b_2m_{i2}$$`
+
+where _i_ is the _i_&lt;sup&gt;th&lt;/sup&gt; cross-validation fold. 
+
+???
+`m_1` = bagmars - glmnet, `m_2` = bagmars - mars, 
+
+
+---
+
+# Bayesian Hierarchical Linear Model &lt;img src="images/tidyposterior.png" class="title-hex"&gt;
+
+We might assume that each 
+
+`$$RMSE_{ij} \sim N(\beta_{i0} + \beta_{ij}m_{ij}, \sigma^2)$$` 
+
+and that the `\(b\)` parameters have some multivariate normal distribution with mean `\(\beta\)` and some covariance matrix. The distribution of the `\(\beta\)` values, along with a distribution for the variance parameter, are the _prior distributions_. 
+
+Bayesian analysis can be used to estimate these parameters. `tidyposterior` uses [Stan](http://mc-stan.org/) to fit the model. 
+
+There are options to change the assumed distribution of the metric (i.e. gamma instead of normality) or to transform the metric to normality. Different variances per model can also be estimated and the priors can be changed. 
+
+This package follows _the spirit_ of [Benavoli _et al_ (2017)(pdf)](http://people.idsia.ch/~marco/papers/2017jmlr-tests.pdf). 
+
+???
+A model-specific variance is more complex and more difficult to fit.
+
+Surprisingly, the normal prior is very effective unless there is a ton of variation in the posterior (violates parameter bounds).
+
+---
+
+# Comparing Models using Bayesian Analysis &lt;img src="images/tidyposterior.png" class="title-hex"&gt;
+
+.pull-left[
+`tidyposterior::perf_mod` can take the `rset` object as input, configure the Bayesian model, and estimate the parameters.
+
+Since we only have 10 replicates, I'd like to put a slightly wider prior on my intercept parameter to be a bit conservative. 
+]
+.pull-right[
+
+.code70[
+
+
+```r
+library(tidyposterior)
+library(rstanarm) # needed for my prior
+rmse_mod &lt;- 
+  perf_mod(rmse_results, 
+           seed = 4344, iter = 5000, 
+           prior_intercept = student_t(df = 1))
+```
+
+```
+## 
+## SAMPLING FOR MODEL 'continuous' NOW (CHAIN 1).
+## Chain 1: 
+## Chain 1: Gradient evaluation took 0.000492 seconds
+## Chain 1: 1000 transitions using 10 leapfrog steps per transition would take 4.92 seconds.
+## Chain 1: Adjust your expectations accordingly!
+## Chain 1: 
+## Chain 1: 
+## Chain 1: Iteration:    1 / 5000 [  0%]  (Warmup)
+## Chain 1: Iteration:  500 / 5000 [ 10%]  (Warmup)
+## Chain 1: Iteration: 1000 / 5000 [ 20%]  (Warmup)
+## Chain 1: Iteration: 1500 / 5000 [ 30%]  (Warmup)
+## Chain 1: Iteration: 2000 / 5000 [ 40%]  (Warmup)
+## Chain 1: Iteration: 2500 / 5000 [ 50%]  (Warmup)
+## Chain 1: Iteration: 2501 / 5000 [ 50%]  (Sampling)
+## Chain 1: Iteration: 3000 / 5000 [ 60%]  (Sampling)
+## Chain 1: Iteration: 3500 / 5000 [ 70%]  (Sampling)
+## Chain 1: Iteration: 4000 / 5000 [ 80%]  (Sampling)
+## Chain 1: Iteration: 4500 / 5000 [ 90%]  (Sampling)
+## Chain 1: Iteration: 5000 / 5000 [100%]  (Sampling)
+## Chain 1: 
+## Chain 1:  Elapsed Time: 2.91506 seconds (Warm-up)
+## Chain 1:                0.854081 seconds (Sampling)
+## Chain 1:                3.76914 seconds (Total)
+## Chain 1: 
+## 
+## SAMPLING FOR MODEL 'continuous' NOW (CHAIN 2).
+## Chain 2: 
+## Chain 2: Gradient evaluation took 3.1e-05 seconds
+## Chain 2: 1000 transitions using 10 leapfrog steps per transition would take 0.31 seconds.
+## Chain 2: Adjust your expectations accordingly!
+## Chain 2: 
+## Chain 2: 
+## Chain 2: Iteration:    1 / 5000 [  0%]  (Warmup)
+## Chain 2: Iteration:  500 / 5000 [ 10%]  (Warmup)
+## Chain 2: Iteration: 1000 / 5000 [ 20%]  (Warmup)
+## Chain 2: Iteration: 1500 / 5000 [ 30%]  (Warmup)
+## Chain 2: Iteration: 2000 / 5000 [ 40%]  (Warmup)
+## Chain 2: Iteration: 2500 / 5000 [ 50%]  (Warmup)
+## Chain 2: Iteration: 2501 / 5000 [ 50%]  (Sampling)
+## Chain 2: Iteration: 3000 / 5000 [ 60%]  (Sampling)
+## Chain 2: Iteration: 3500 / 5000 [ 70%]  (Sampling)
+## Chain 2: Iteration: 4000 / 5000 [ 80%]  (Sampling)
+## Chain 2: Iteration: 4500 / 5000 [ 90%]  (Sampling)
+## Chain 2: Iteration: 5000 / 5000 [100%]  (Sampling)
+## Chain 2: 
+## Chain 2:  Elapsed Time: 3.22736 seconds (Warm-up)
+## Chain 2:                0.711313 seconds (Sampling)
+## Chain 2:                3.93867 seconds (Total)
+## Chain 2: 
+## 
+## SAMPLING FOR MODEL 'continuous' NOW (CHAIN 3).
+## Chain 3: 
+## Chain 3: Gradient evaluation took 5.1e-05 seconds
+## Chain 3: 1000 transitions using 10 leapfrog steps per transition would take 0.51 seconds.
+## Chain 3: Adjust your expectations accordingly!
+## Chain 3: 
+## Chain 3: 
+## Chain 3: Iteration:    1 / 5000 [  0%]  (Warmup)
+## Chain 3: Iteration:  500 / 5000 [ 10%]  (Warmup)
+## Chain 3: Iteration: 1000 / 5000 [ 20%]  (Warmup)
+## Chain 3: Iteration: 1500 / 5000 [ 30%]  (Warmup)
+## Chain 3: Iteration: 2000 / 5000 [ 40%]  (Warmup)
+## Chain 3: Iteration: 2500 / 5000 [ 50%]  (Warmup)
+## Chain 3: Iteration: 2501 / 5000 [ 50%]  (Sampling)
+## Chain 3: Iteration: 3000 / 5000 [ 60%]  (Sampling)
+## Chain 3: Iteration: 3500 / 5000 [ 70%]  (Sampling)
+## Chain 3: Iteration: 4000 / 5000 [ 80%]  (Sampling)
+## Chain 3: Iteration: 4500 / 5000 [ 90%]  (Sampling)
+## Chain 3: Iteration: 5000 / 5000 [100%]  (Sampling)
+## Chain 3: 
+## Chain 3:  Elapsed Time: 3.27942 seconds (Warm-up)
+## Chain 3:                0.603365 seconds (Sampling)
+## Chain 3:                3.88278 seconds (Total)
+## Chain 3: 
+## 
+## SAMPLING FOR MODEL 'continuous' NOW (CHAIN 4).
+## Chain 4: 
+## Chain 4: Gradient evaluation took 2e-05 seconds
+## Chain 4: 1000 transitions using 10 leapfrog steps per transition would take 0.2 seconds.
+## Chain 4: Adjust your expectations accordingly!
+## Chain 4: 
+## Chain 4: 
+## Chain 4: Iteration:    1 / 5000 [  0%]  (Warmup)
+## Chain 4: Iteration:  500 / 5000 [ 10%]  (Warmup)
+## Chain 4: Iteration: 1000 / 5000 [ 20%]  (Warmup)
+## Chain 4: Iteration: 1500 / 5000 [ 30%]  (Warmup)
+## Chain 4: Iteration: 2000 / 5000 [ 40%]  (Warmup)
+## Chain 4: Iteration: 2500 / 5000 [ 50%]  (Warmup)
+## Chain 4: Iteration: 2501 / 5000 [ 50%]  (Sampling)
+## Chain 4: Iteration: 3000 / 5000 [ 60%]  (Sampling)
+## Chain 4: Iteration: 3500 / 5000 [ 70%]  (Sampling)
+## Chain 4: Iteration: 4000 / 5000 [ 80%]  (Sampling)
+## Chain 4: Iteration: 4500 / 5000 [ 90%]  (Sampling)
+## Chain 4: Iteration: 5000 / 5000 [100%]  (Sampling)
+## Chain 4: 
+## Chain 4:  Elapsed Time: 2.75118 seconds (Warm-up)
+## Chain 4:                0.472775 seconds (Sampling)
+## Chain 4:                3.22395 seconds (Total)
+## Chain 4:
+```
+
+]
+
+]
+
+
+
+
+
+---
+
+# Showing the Posterior Distributions &lt;img src="images/tidyposterior.png" class="title-hex"&gt;&lt;img src="images/ggplot2.png" class="title-hex"&gt;
+
+.pull-left[
+Bayesian analysis can produce probability distributions for the estimated parameters (aka the _posterior distributions_).  These can be used to compare models.  
+
+
+
+```r
+posteriors &lt;- tidy(rmse_mod, seed = 366784)
+summary(posteriors)
+```
+
+```
+## # A tibble: 2 x 4
+##   model        mean  lower  upper
+##   &lt;chr&gt;       &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;
+## 1 boosting   0.0726 0.0683 0.0768
+## 2 linear_reg 0.0797 0.0753 0.0840
+```
+
+These are 90% _credible intervals_. 
+
+]
+.pull-right[
+
+```r
+ggplot(posteriors)
+```
+
+&lt;img src="images/part-5-tp-post-plot-1.svg" width="90%" style="display: block; margin: auto;" /&gt;
+]
+
+
+---
+
+# Comparing Models &lt;img src="images/tidyposterior.png" class="title-hex"&gt;&lt;img src="images/ggplot2.png" class="title-hex"&gt;
+
+.pull-left[
+Once the posteriors for each model are calculated, it is pretty easy to compute the posterior for the differences between models and plot them.
+
+
+```r
+differences &lt;- contrast_models(rmse_mod, seed = 2581)
+```
+
+If we know the size of a practical difference in RMSE values, this can be included into the analysis to get [ROPE estimates](http://doingbayesiandataanalysis.blogspot.com/2013/08/how-much-of-bayesian-posterior.html) (Region of Practical Equivalence).  
+
+]
+.pull-right[
+
+```r
+ggplot(differences, size = 0.05)
+```
+
+&lt;img src="images/part-5-bayes-contrast-plot-1.svg" width="90%" style="display: block; margin: auto;" /&gt;
+]
+
+
+---
+
+# Comparing Models &lt;img src="images/tidyposterior.png" class="title-hex"&gt;
+
+If we think that 0.05 log units is a real difference, we can assess which models are practically different from one another. 
+
+
+
+```r
+summary(differences, size = 0.05)
+```
+
+```
+## # A tibble: 1 x 9
+##   contrast               probability     mean   lower    upper  size pract_neg pract_equiv pract_pos
+##   &lt;chr&gt;                        &lt;dbl&gt;    &lt;dbl&gt;   &lt;dbl&gt;    &lt;dbl&gt; &lt;dbl&gt;     &lt;dbl&gt;       &lt;dbl&gt;     &lt;dbl&gt;
+## 1 boosting vs linear_reg      0.0059 -0.00712 -0.0112 -0.00300  0.05         0           1         0
+```
+
+`probability` is the probability that linear regression is better than boosting. 
+
+`pract_neg` is the probability that the difference in RMSE is practically negative based on our thoughts about `size`.
+    </textarea>
+<script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+<script>var slideshow = remark.create({
+"ratio": "16:9",
+"highlightLanguage": "R",
+"countIncrementalSlides": false
+});
+if (window.HTMLWidgets) slideshow.on('afterShowSlide', function (slide) {
+  window.dispatchEvent(new Event('resize'));
+});
+(function() {
+  var d = document, s = d.createElement("style"), r = d.querySelector(".remark-slide-scaler");
+  if (!r) return;
+  s.type = "text/css"; s.innerHTML = "@page {size: " + r.style.width + " " + r.style.height +"; }";
+  d.head.appendChild(s);
+})();</script>
+
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  tex2jax: {
+    skipTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+  }
+});
+</script>
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+(function () {
+  var script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.src  = 'https://cdn.bootcss.com/mathjax/2.7.1/MathJax.js?config=TeX-MML-AM_CHTML';
+  if (location.protocol !== 'file:' && /^https?:/.test(script.src))
+    script.src  = script.src.replace(/^https?:/, '');
+  document.getElementsByTagName('head')[0].appendChild(script);
+})();
+</script>
+  </body>
+</html>
